@@ -1,6 +1,6 @@
 # Fix: pin the 3D models a Release Studio build reads
 
-Status: draft for upstream discussion. Item 4 of phase 0b in
+Status: draft for upstream discussion. PR: #693 (resolve and hash external models, fail closed). Staging, persisted model inputs, the stock model set and gating are still open. Item 4 of phase 0b in
 `catalog-git-library-sources.md` (section 9). Can merge on its own; it does
 not depend on Git library sources.
 

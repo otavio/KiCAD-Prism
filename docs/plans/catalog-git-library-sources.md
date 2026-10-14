@@ -314,11 +314,14 @@ Additional problems found in the same review:
 - **`--overwrite-assets`** in the bulk import scripts rewrites canonical files
   in place, so older revisions then point at new bytes.
 
-Changes needed before Git sources are enabled (phase 0b):
+Changes needed before Git sources are enabled (phase 0b). Section 11 lists
+the PRs for each item and what each still lacks:
 
-1. **Purge:** see `fix-step-purge-released-models.md`. Its recommendation is
-   to remove STEP purging altogether, since any purge breaks the audit chain
-   and the narrower "never-released drafts only" rule reclaims little.
+1. **Purge:** see `fix-step-purge-released-models.md`. Chosen rule (option
+   B): purge a STEP only when every revision linking it was never released,
+   is not the head, and is older than a grace period; record each purge in an
+   append-only ledger and quarantine the file. Stopping purging altogether
+   (option A) remains the fallback.
 2. **Pin 3D models in the project.** Options for upstream to choose from:
    - (a) Embed the model in the footprint at placement time, using KiCad's
      embedded files (`kicad-embed://`). The `.kicad_pcb` then carries the
@@ -355,6 +358,116 @@ Tests: a component with released rev1 and draft rev2 that has a new STEP —
 maintenance keeps rev1's STEP. Placement payloads for rev1 and rev2 produce
 different model paths or embedded content. A project placed at rev1 still
 renders rev1's model after rev2 is released.
+
+### 10. Fix plans and related bugs
+
+Each phase 0b item has its own plan:
+
+| Item | Plan |
+|---|---|
+| 1. STEP purge | `fix-step-purge-released-models.md` |
+| 2. Pin 3D models | `fix-pin-3d-models-in-projects.md` |
+| 3. Record the revision | `fix-record-catalog-revision-on-placement.md` |
+| 4. Release Studio | `fix-release-studio-external-model-pinning.md` |
+| 5. DBL export | `fix-dbl-export-models-and-versioning.md` |
+
+Bugs found while writing them, for separate PRs:
+
+- DBL export keys are not stable (`_2` suffixes). Still open.
+- The DBL `fp-lib-table` lists libraries that were not exported. Still open.
+- Footprints with more than one model are matched to model assets by
+  position, so they can get the wrong models. Fixed by #686.
+
+### 11. Pull requests and remaining gaps
+
+As of 2026-10-14, the open PRs against `dev` (base `89a8a111`) are listed
+below. Each one is up to date with `dev` and mergeable. Only GitGuardian has
+run. The `Quality gate` workflow is waiting for a maintainer to approve
+running it on fork PRs (`action_required`), so all test results so far come
+from local runs.
+
+| Item | PR | What it covers | Depends on |
+|---|---|---|---|
+| 1. Purge | #684 | Purge only when no linking revision is the head, released, `release_status = 'released'`, or has a release record. | — |
+| 1. Purge | #691 | Append-only ledger `catalog_asset_file_purges` (catalog migration step 9). The audit check accepts a recorded purge. Reading a purged file gives 404 `asset_purged`. | #684 |
+| 1. Purge | #696 | Advisory lock per sha256 shared by the purge and by 3D-model linking. Linking a missing file gives 409 `asset_bytes_missing`. | #691 |
+| 1. Purge | #688 | `scripts/check_catalog_asset_files.py`: reports missing or changed files and restores them from the object store or `--search`. | — |
+| 1. Purge | #687 | `released_missing_files` in `GET /catalog/health`. | — |
+| 1. Purge | #685 | The audit panel names the revision or asset when verification fails outside the event chain. | — |
+| 2. Pin 3D models | #686 | Match footprint models to assets by file name. | — |
+| 2. Pin 3D models | #697 | Embed models at placement (`kicad-embed://<stem>-<sha12><ext>`). Embedded models are dropped from the manifest. The shipment never grows, and each footprint is capped at 4 MiB. | #686 |
+| 3. Record the revision | #695 | Hidden `Prism_Component` / `Prism_Revision` fields on remote placement. The names are reserved, and harvest ignores them. Covers only section 1 of the fix plan. | — |
+| 4. Release Studio | #693 | Resolve external models the way KiCad does and hash them into the closure digest. Fails closed as non-hermetic. Does not gate approval. | — |
+| 5. DBL export | #689 | The symbol's `Footprint` property equals `LibFootprint`. | — |
+| 5. DBL export | #694 | Models under `${PRISM_LIB_DIR}/3DModels/<sha16>/`, models of every released revision kept, `model_count` / `missing_models`. | #689 |
+| 5. DBL export | #690 | The bulk import scripts write through `write_canonical_file` and never rewrite a canonical file. | — |
+| Related | #692 | A System Builder instance pinned to a revision draws that revision's model, and the scene queues its conversion. | — |
+
+Merge order and conflicts, checked by trial-merging every branch onto `dev`:
+
+- #684 → #691 → #696, #686 → #697 and #689 → #694 are stacks; each later PR
+  already contains the earlier one's commits.
+- #695, #697 and #694 conflict with each other in `placement_payloads.py`
+  (and #695 with #697 in `placement.py`). #694 documents its conflict with
+  #686, but none of them mentions the other two. Whichever lands second has to
+  combine `stamp=True` with `embed_models=True` in `_placement_payloads` and
+  the signed-download path, and add the `model_path` callable from #694.
+  Merged together, the stamp and embed changes alter the placed payload bytes
+  only once.
+- All other pairs merge cleanly.
+
+Gaps that no PR covers yet. These are the candidates for the upstream issue:
+
+1. **Purge, not yet as decided (option B).** There is no grace period and no
+   quarantine; files are still unlinked at once. The run commits once, so a
+   database error after some unlinks loses their ledger rows (#696
+   follow-up). Files purged before the ledger existed still fail the audit,
+   and there is no `--record-legacy`. There is no release note or
+   `docs/UPGRADES.md` entry naming the data-loss window.
+2. **Models that are not embedded are still unpinned.** Models over the cap
+   and incompressible models keep `RemoteLibrary/remote_3d/<basename>`. That
+   name is the same for every revision, and nothing reports it. Compressed
+   blobs are not persisted, so upgrading `zstandard` changes placement bytes
+   once. Nobody has checked yet that KiCad 9/10 loads the result
+   (`kicad-cli` round trip and manual placement). Harvest does not read
+   `kicad-embed://` models (`project_component_asset_extractor.py`), so
+   importing a project placed after #697 loses its models. Boards placed
+   before #697 have no report and no backfill.
+3. **Revision recording is only written, never read.** Still missing:
+   - the reader;
+   - the `project_catalog_scans` / `project_catalog_placements` tables
+     (catalog migration step 10, after #691's step 9);
+   - the usage scan job;
+   - backfill by inference;
+   - the "library updates available" API and UI;
+   - use in Release Studio.
+
+   Placement still serves only `released_revision_id`, so re-placing at the
+   pinned revision (fix plan Q8) is not possible. DBL stamping (Q4) and
+   footprint stamping (Q5) are open. Nobody has checked yet that the stamp
+   survives "Update symbols from library" and "Update PCB from schematic" in
+   KiCad 8/9/10.
+4. **Release Studio hashes models but does not stage them.** The tools can
+   still read bytes other than the hashed ones. Still missing:
+   - the stock 3D model set pinned in the image;
+   - persisting model inputs (`ws_release_closure_inputs`, needs a
+     migration);
+   - `self_contained` on the candidate;
+   - relative, `:alias:`, `$VAR` and `$(VAR)` model forms.
+
+   Whether non-hermetic models gate approval or publish is undecided.
+5. **DBL export.** The rebuild is not atomic. Keys are unstable (`_2`), and
+   `fp-lib-table` lists libraries that were not exported. Symbols and
+   footprints are still a "latest released" view. Boards placed from an older
+   DBL keep `RemoteLibrary` paths until "Update footprints from library".
+6. **System Builder.** Harness end housings and module connector parts still
+   use the current revision, and the catalog UI's Convert button converts
+   only the head.
+7. **Smaller follow-ups.** No admin UI shows `released_missing_files`.
+   `--dry-run` in `import_kicad_library_assets.py` still writes directories
+   and reports. The overwrite flags might be renamed.
+8. **Git library sources themselves.** There are no PRs yet for phase 0
+   (gaps 1–5 above) or phases 1–4.
 
 ## Phases
 

@@ -1,6 +1,6 @@
 # Fix: DBL export 3D models, footprint names, and immutable bulk-import assets
 
-Status: draft for maintainer discussion. Implements item 5 of section 9 of
+Status: draft for maintainer discussion. PRs: #689 (footprint name alignment), #694 (export models, option C), #690 (immutable bulk-import assets). The atomic rebuild is still open. Implements item 5 of section 9 of
 [catalog-git-library-sources.md](catalog-git-library-sources.md) ("Keeping
 existing projects on the library version they used"), plus the
 `--overwrite-assets` problem listed in the same section.

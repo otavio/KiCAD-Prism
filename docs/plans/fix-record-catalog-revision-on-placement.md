@@ -1,6 +1,6 @@
 # Fix: record which catalog revision a KiCad project placed
 
-Status: draft for maintainer discussion. Part of phase 0b in
+Status: draft for maintainer discussion. PR: #695 covers section 1 only (fields on the placed symbol). Sections 2-8 (reader, migration step 10, scan job, backfill, API/UI, Release Studio) are still open. Part of phase 0b in
 [catalog-git-library-sources.md](catalog-git-library-sources.md), section 9,
 item 3 ("Record the revision"). The STEP purge fix (item 1), pinning 3D models
 (item 2) and Release Studio pinning (item 4) are separate changes. This plan
@@ -176,13 +176,21 @@ Callers:
   `GENERATOR_BUILD` changes only if a module in `GENERATOR_MODULE_PATHS`
   changes, and none does.
 
-### 3. Data model (catalog migration step 9)
+### 3. Data model (catalog migration step 10)
 
 Keep `component_usage` as the where-used summary. It stays one row per
 (component, project, commit). Add two tables in step
-`(9, "project_catalog_placements", _project_catalog_placements)` in
+`(10, "project_catalog_placements", _project_catalog_placements)` in
 `catalog_schema_migrations.py`. The step is additive and uses
-`IF NOT EXISTS`, like step 7/8.
+`IF NOT EXISTS`, like steps 7 and 8.
+
+**Ordering dependency.** Step 9 is claimed by the STEP purge fix
+([fix-step-purge-released-models.md](fix-step-purge-released-models.md),
+`(9, "asset_file_purges", ...)`), which is expected to land first. This
+plan takes step 10 and must be rebased onto it. If the purge fix slips, the
+numbers must not be swapped after either step has shipped. A branch
+database that recorded this step under 9 goes into `RENUMBERED`, as
+`agent_tokens_registry` did.
 
 ```sql
 CREATE TABLE IF NOT EXISTS project_catalog_scans (
@@ -224,6 +232,20 @@ CREATE INDEX IF NOT EXISTS idx_project_catalog_placements_revision
   stamp first, falling back to the MPN identity (`project_import_matching.py`
   change, behind the existing facade signature). `details_json` gains the
   revision ids, so the where-used list can show them without a join.
+- **Interaction with the STEP purge.** Purge rule B of the purge fix
+  deletes the STEP files of never-released draft revisions after 30 days.
+  Placement rows only ever reference released revisions:
+  - a stamp is written only by placement, which serves only
+    `released_revision_id`;
+  - inference (§6) considers only revisions that were ever released.
+
+  So no row this plan writes can point at a revision whose model rule B may
+  purge. A stamp naming an unreleased revision can only come from a manual
+  edit or another Prism installation. It is recorded as found, and the
+  report shows it as `unknown_revision` or as not released, never as
+  placeable. Rule B therefore needs no exclusion for
+  `project_catalog_placements`. If a later change lets placement serve
+  drafts, it has to revisit both plans.
 - Retention: rows are small (one per distinct part per scanned commit). v1
   keeps them all. Pruning is open question Q6.
 
@@ -379,7 +401,7 @@ Studio thread.
 | `backend/app/services/catalog/project_placements.py` (new) | Collaborator: record a scan, read placements, build the report. |
 | `backend/app/services/catalog/project_import_matching.py` | Resolve the component from the stamp before the MPN. Pass revision ids into `details_json`. Call `record_scan`. |
 | `backend/app/services/catalog/collaborators.py` | Wire `CatalogProjectPlacements`. |
-| `backend/app/services/catalog_schema_migrations.py` | Step 9 `project_catalog_placements`. |
+| `backend/app/services/catalog_schema_migrations.py` | Step 10 `project_catalog_placements` (after the purge fix's step 9). |
 | `backend/app/services/project_component_import_service.py` | Exclude stamp fields from proposals, dedupe and merge. Carry the stamp in provenance. |
 | `backend/app/services/project_catalog_usage_service.py` (new) | Transactions, inference (§6), scan entry point. |
 | `backend/app/services/catalog_worker_tasks.py` | `project_catalog_usage` kind and handler. |
@@ -424,8 +446,9 @@ skips)**
 - A stamp with an unknown component id is kept as `unknown_component`.
 - The where-used list shows `revisions`.
 
-**Migrations.** `test_catalog_schema_migrations.py`: step 9 applies to a
-fresh database and to a step-8 database. A second apply is a no-op.
+**Migrations.** `test_catalog_schema_migrations.py`: step 10 applies to a
+fresh database and to a step-9 database (with the purge fix's
+`asset_file_purges` already applied). A second apply is a no-op.
 
 **API**
 - A user without read on the project gets the 404/403 that `authorized_project`
